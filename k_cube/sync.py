@@ -19,16 +19,30 @@ class Synchronizer:
         self.repo = repo
         self.client = api_client
 
-    def sync(self):
+    def sync(self) -> bool:
         """
         执行一个完整的双向同步周期。
         """
+        # --- 关键修改：检查 vault_id ---
+        if not self.repo.vault_id:
+            console.print("[bold red]错误：本地保险库未与云端关联 (缺少 vault_id)。[/bold red]")
+            raise ValueError("缺少 vault_id")
+
+        console.print("🔄 开始同步...")
+
+        with console.status("[bold green]正在检查远程状态...[/bold green]"):
+            local_versions = self.repo.db.get_all_version_hashes()
+            # --- 关键修改：传入 vault_id ---
+            sync_state = self.client.check_sync_state(
+                self.repo.vault_id, local_versions)
+
         console.print("🔄 开始同步...")
 
         # 1. 检查本地与远程的状态差异
         with console.status("[bold green]正在检查远程状态...[/bold green]"):
             local_versions = self.repo.db.get_all_version_hashes()
-            sync_state = self.client.check_sync_state(local_versions)
+            sync_state = self.client.check_sync_state(
+                self.repo.vault_id, local_versions)
 
         versions_to_upload = sync_state.get('versions_to_upload', [])
         versions_to_download = sync_state.get('versions_to_download', [])
@@ -39,6 +53,8 @@ class Synchronizer:
         console.print(
             f"  - [green]{len(versions_to_download)}[/green] 个版本需要下载。")
 
+        did_download = False
+
         # 2. 推送本地变更到远程
         if versions_to_upload:
             self._push_changes(versions_to_upload)
@@ -46,11 +62,14 @@ class Synchronizer:
         # 3. 拉取远程变更到本地
         if versions_to_download:
             self._pull_changes(versions_to_download)
+            did_download = True  # <--- 修改3：如果下载了，就设置标志位
 
         if not versions_to_upload and not versions_to_download:
             console.print("[bold green]✅ 你的知识库已经是最新的了！[/bold green]")
         else:
             console.print("[bold green]✅ 同步完成！[/bold green]")
+
+        return did_download  # <--- 修改4：返回标志位
 
     def _push_changes(self, version_hashes: list):
         """处理上传逻辑。"""
@@ -90,14 +109,15 @@ class Synchronizer:
             with Progress() as progress:
                 task = progress.add_task(
                     "[cyan]上传对象...", total=len(blobs_payload))
-                self.client.upload_blobs(blobs_payload)
+                self.client.upload_blobs(self.repo.vault_id, blobs_payload)
                 progress.update(task, advance=len(blobs_payload))
 
         # d. 上传版本数据
         with Progress() as progress:
             task = progress.add_task(
                 "[cyan]上传版本...", total=len(versions_data_to_upload))
-            self.client.upload_versions(versions_data_to_upload)
+            self.client.upload_versions(
+                self.repo.vault_id, versions_data_to_upload)
             progress.update(task, advance=len(versions_data_to_upload))
 
     def _pull_changes(self, version_hashes: list):
@@ -108,7 +128,8 @@ class Synchronizer:
         with Progress() as progress:
             task = progress.add_task(
                 "[cyan]下载版本...", total=len(version_hashes))
-            versions_data = self.client.download_versions(version_hashes)
+            versions_data = self.client.download_versions(
+                self.repo.vault_id, version_hashes)
             progress.update(task, advance=len(version_hashes))
 
         # b. 找出所有需要的 blob 哈希并下载
@@ -124,7 +145,7 @@ class Synchronizer:
                 task = progress.add_task(
                     "[cyan]下载对象...", total=len(blobs_to_download))
                 downloaded_blobs = self.client.download_blobs(
-                    blobs_to_download)
+                    self.repo.vault_id, blobs_to_download)
                 progress.update(task, advance=len(blobs_to_download))
 
             # c. 将下载的 blob 写入本地对象库

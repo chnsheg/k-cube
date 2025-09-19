@@ -16,6 +16,8 @@ from .utils import compress_blob, hash_blob, KCUBE_DIR
 import shutil
 from .utils import decompress_blob
 
+from .config import ConfigManager  # <--- 确保导入 ConfigManager
+
 # 使用 dataclass 来定义一个清晰的数据结构，用于表示仓库状态
 
 
@@ -51,6 +53,10 @@ class Repository:
         self.versions_path = self.kcube_path / "versions"
         self.db = Database(self.db_path)
         self.staging_path = self.kcube_path / "staging.json"
+        # --- 新增 ---
+        local_config_path = self.kcube_path / "config.json"
+        self.config = ConfigManager(local_config_path)
+        self.vault_id = self.config.get("vault_id")
 
     def _read_staging_area(self) -> Dict[str, str]:
         """读取暂存区内容。"""
@@ -187,112 +193,156 @@ class Repository:
     def add(self, paths_to_add: List[Path]):
         """
         将指定路径的变更添加到暂存区。
-        该方法能正确处理文件、目录、新增、修改和删除操作。
+        该方法能正确处理文件、目录、新增、修改和删除操作，并提供详细输出。
         """
+        from rich.console import Console
+        console = Console()
+
         staging_data = self._read_staging_area()
+
+        # 获取所有已知文件的集合，作为判断“删除”和“新增”的依据
         latest_version_hash = self.db.get_latest_version_hash()
         last_manifest = self.db.get_version_manifest(
             latest_version_hash) if latest_version_hash else {}
 
-        # 1. 收集所有需要处理的独立文件路径
-        all_files_to_process: Set[Path] = set()
+        # 已知文件 = 上次提交的文件 + 当前已暂存的文件
+        # 我们需要处理暂存区里可能存在的 "_DELETED_" 标记
+        tracked_in_staging = {
+            p for p, h in staging_data.items() if h != "_DELETED_"}
+        all_tracked_files = set(last_manifest.keys()) | tracked_in_staging
+
+        # 1. 规范化输入路径，并找出用户意图操作的所有文件
+        files_to_process: Set[Path] = set()
+        dirs_to_process: List[Path] = []
 
         for path_obj in paths_to_add:
-            # 标准化路径为绝对路径
             full_path = path_obj.resolve()
 
             # 安全检查：确保路径在保险库内
             try:
                 full_path.relative_to(self.vault_path.resolve())
             except ValueError:
-                print(f"警告：路径 '{path_obj}' 不在保险库中，已忽略。")
+                console.print(f"警告：路径 '{path_obj}' 不在保险库中，已忽略。")
                 continue
 
-            # a. 如果是目录，展开其下所有文件
             if full_path.is_dir():
-                # glob '**/*' 会匹配所有子目录下的文件
-                for p in full_path.glob('**/*'):
+                dirs_to_process.append(full_path)
+                # 展开目录下所有当前存在的文件
+                for p in full_path.rglob('*'):
                     if p.is_file() and KCUBE_DIR not in p.parts:
-                        all_files_to_process.add(p)
+                        files_to_process.add(p)
+            elif full_path.is_file():
+                files_to_process.add(full_path)
+            elif not full_path.exists():
+                # 如果用户明确指定了一个不存在的路径，我们也需要处理它（可能是一个删除操作）
+                files_to_process.add(full_path)
 
-                # 特殊处理：找出目录下被版本库追踪但已删除的文件
-                # 这是 `add` 删除操作的关键
-                for known_path_str in last_manifest.keys():
-                    known_path_abs = self.vault_path.joinpath(
-                        known_path_str).resolve()
+        # 2. 处理被删除的文件
+        # 遍历所有已知文件，检查它们是否存在于工作区
+        files_known_before_add = set(
+            last_manifest.keys()) | set(staging_data.keys())
+        for tracked_file_str in files_known_before_add:
+            if tracked_file_str == "_DELETED_":
+                continue
+
+            tracked_file_abs = self.vault_path.joinpath(
+                tracked_file_str).resolve()
+
+            # 检查这个被追踪的文件是否在我们当前操作的范围内
+            in_scope = False
+            # 如果是 `add .` (即 dirs_to_process 包含仓库根目录)，则所有文件都在范围内
+            if self.vault_path.resolve() in dirs_to_process:
+                in_scope = True
+            else:
+                for d in dirs_to_process:
                     try:
-                        # 检查已知文件是否属于当前正在添加的目录
-                        if known_path_abs.relative_to(full_path):
-                            if not known_path_abs.exists():
-                                all_files_to_process.add(known_path_abs)
+                        if tracked_file_abs.relative_to(d):
+                            in_scope = True
+                            break
                     except ValueError:
                         continue
 
-            # b. 如果是文件（无论存在与否），直接添加
-            elif full_path.is_file() or not full_path.exists():
-                all_files_to_process.add(full_path)
+            if not in_scope and tracked_file_abs not in files_to_process:
+                continue  # 如果文件不在操作范围内，则跳过
 
-        # 2. 遍历所有收集到的文件，更新暂存区
-        for file_path_abs in all_files_to_process:
+            # 如果文件在操作范围内，但现在不存在了，就标记为删除
+            if not tracked_file_abs.exists():
+                relative_path_str = str(tracked_file_abs.relative_to(
+                    self.vault_path)).replace('\\', '/')
+                if staging_data.get(relative_path_str) != "_DELETED_":
+                    staging_data[relative_path_str] = "_DELETED_"
+                    console.print(
+                        f"  [red]delete:[/red]     {relative_path_str}")
+
+        # 3. 处理新增和修改的文件
+        for file_path_abs in files_to_process:
+            if not file_path_abs.is_file():  # 只处理实际存在的文件
+                continue
+
             relative_path_str = str(file_path_abs.relative_to(
                 self.vault_path)).replace('\\', '/')
 
-            if file_path_abs.exists() and file_path_abs.is_file():
-                # --- 处理新增或修改 ---
-                with open(file_path_abs, 'rb') as f:
-                    content = f.read()
+            with open(file_path_abs, 'rb') as f:
+                content = f.read()
 
-                uncompressed_size = len(content)
-                compressed = compress_blob(content)
-                compressed_size = len(compressed)
-                blob_hash = hash_blob(compressed)
+            compressed = compress_blob(content)
+            blob_hash = hash_blob(compressed)
 
-                # 将路径和其内容哈希更新到暂存区
+            current_staged_hash = staging_data.get(relative_path_str)
+
+            # 判断是新增还是修改
+            is_new = relative_path_str not in all_tracked_files
+
+            if current_staged_hash != blob_hash:
+                if is_new:
+                    console.print(
+                        f"  [green]new file:[/green] {relative_path_str}")
+                else:
+                    console.print(
+                        f"  [cyan]modify:[/cyan]   {relative_path_str}")
+
                 staging_data[relative_path_str] = blob_hash
-
-                # 提前将blob写入对象库，这是'add'的核心职责之一
                 if not self.db.blob_exists(blob_hash):
-                    blob_dir = self.versions_path / blob_hash[:2]
-                    blob_dir.mkdir(exist_ok=True)
-                    blob_file_path = blob_dir / blob_hash[2:]
-                    with open(blob_file_path, 'wb') as f:
-                        f.write(compressed)
-                    self.db.insert_blob(
-                        blob_hash, uncompressed_size, compressed_size)
+                    self._write_blob(blob_hash, compressed, is_compressed=True)
 
-            else:
-                # --- 处理删除 ---
-                # 只有当文件在上次提交中存在，并且现在不存在时，才将其标记为删除
-                if relative_path_str in last_manifest and not file_path_abs.exists():
-                    staging_data[relative_path_str] = "_DELETED_"
-                # 如果文件只是被用户错误地指定（不存在且从未被追踪），则忽略
-                elif relative_path_str not in last_manifest:
-                    print(f"警告：文件 '{relative_path_str}' 不存在且未被追踪，已忽略。")
-
-        # 3. 将更新后的暂存区数据写回文件
+        # 4. 将更新后的暂存区数据写回文件
         self._write_staging_area(staging_data)
 
     def commit(self, message: dict):
-        """将暂存区的内容提交为一个新版本。"""
-        staged_manifest = self._read_staging_area()
-        if not staged_manifest:
+        """
+        将暂存区的内容固化为一个新版本。
+        这个方法现在能正确处理新增、修改和删除操作。
+        """
+        staged_changes = self._read_staging_area()
+        if not staged_changes:
             print("暂存区为空，没有需要提交的内容。")
             return
 
-        # 1. 以最新版本为基础，应用暂存区的变更
+        # 1. 获取上一个版本的清单，作为我们构建新清单的基础。
+        #    如果是第一次提交，基础就是一个空字典。
         latest_version_hash = self.db.get_latest_version_hash()
         new_manifest = self.db.get_version_manifest(
             latest_version_hash) if latest_version_hash else {}
 
-        for path, blob_hash in staged_manifest.items():
+        # 2. 遍历暂存区中的所有变更，并应用到新清单上。
+        changes_applied = False
+        for path, blob_hash in staged_changes.items():
+            changes_applied = True
             if blob_hash == "_DELETED_":
+                # 如果是删除标记，就从新清单中移除这个文件
                 if path in new_manifest:
                     del new_manifest[path]
             else:
+                # 如果是新增或修改，就更新或添加到新清单中
                 new_manifest[path] = blob_hash
 
-        # 2. 创建版本元信息并写入数据库 (逻辑同原save)
+        if not changes_applied:
+            print("暂存区没有检测到有效的变更可以提交。")
+            return
+
+        # 3. 创建版本元信息并计算哈希
         timestamp = int(time.time())
+        # 我们只将最终的、干净的清单存入版本元信息中
         version_meta = {
             "timestamp": timestamp,
             "message": message,
@@ -301,12 +351,16 @@ class Repository:
         version_meta_str = json.dumps(version_meta, sort_keys=True)
         version_hash = hash_blob(version_meta_str.encode('utf-8'))
 
+        # 4. 将新版本写入数据库
         self.db.insert_version(version_hash, timestamp, message, new_manifest)
 
-        # 3. 清空暂存区
+        # 5. 清空暂存区，为下一次 `add` 做准备
         self._write_staging_area({})
 
-        print(f"新版本提交成功！版本号: {version_hash}")
+        from rich.console import Console
+        console = Console()
+        console.print(
+            f"✅ [bold green]新版本提交成功！[/bold green] 版本号: [cyan]{version_hash[:12]}[/cyan]")
 
     def get_history(self, relative_path: Optional[Path] = None):
         """获取仓库或文件的版本历史。"""
@@ -314,40 +368,90 @@ class Repository:
             '\\', '/') if relative_path else None
         return self.db.get_version_history(path_str)
 
-    def restore(self, version_prefix: str, file_path: Optional[Path] = None, hard_mode=False):
+    def restore(self, version_prefix: str, file_path: Optional[Path] = None, hard_mode: bool = False):
         """
         恢复文件或整个工作区到指定版本。
-
-        Args:
-            version_prefix (str): 版本哈希前缀。
-            file_path (Optional[Path]): 如果提供，只恢复此文件。否则恢复整个版本。
-            hard_mode (bool): 在版本恢复模式下，是否删除版本中不存在但工作区存在的文件。
         """
-        # 解析版本
+        # 1. 解析版本哈希
         full_version_hash = self.db.find_version_by_prefix(version_prefix)
         if not full_version_hash:
             raise ValueError(f"版本前缀 '{version_prefix}' 不明确或不存在。")
 
-        if file_path:  # 恢复单个文件
+        # 2. 根据是恢复单个文件还是整个版本，分发任务
+        if file_path:
             self._restore_single_file(file_path, full_version_hash)
-        else:  # 恢复整个版本
-            self._restore_version(full_version_hash, hard_mode)
+        else:
+            self._restore_full_vault(full_version_hash, hard_mode)
 
     def _restore_single_file(self, relative_path: Path, version_hash: str):
-        # (此逻辑基本从原 restore_file 方法迁移过来)
+        """恢复单个文件到指定版本。"""
         path_str = str(relative_path).replace('\\', '/')
         blob_hash = self.db.get_blob_hash_for_file_in_version(
             version_hash, path_str)
-        if not blob_hash:
-            raise FileNotFoundError(
-                f"文件 '{path_str}' 在版本 '{version_hash[:8]}' 中不存在。")
-
-        content = self._read_blob(blob_hash)
 
         target_file_path = self.vault_path / relative_path
 
+        if not blob_hash:
+            # 如果目标版本中没有这个文件，意味着应该删除它
+            if target_file_path.exists():
+                target_file_path.unlink()
+                print(f"文件 '{relative_path}' 在目标版本中不存在，已删除。")
+            return
+
+        content = self._read_blob(blob_hash)
+        target_file_path.parent.mkdir(parents=True, exist_ok=True)
         target_file_path.write_bytes(content)
         print(f"文件 '{relative_path}' 已恢复。")
+
+    def _restore_full_vault(self, version_hash: str, hard_mode: bool):
+        """恢复整个保险库到指定版本。"""
+        target_manifest = self.db.get_version_manifest(version_hash)
+
+        # 1. 获取当前工作区所有已追踪的文件
+        #    “已追踪”的定义是：存在于上一个版本或暂存区中的文件
+        latest_version_hash = self.db.get_latest_version_hash()
+        last_manifest = self.db.get_version_manifest(
+            latest_version_hash) if latest_version_hash else {}
+        staged_manifest = self._read_staging_area()
+        files_to_check = set(last_manifest.keys()) | set(
+            staged_manifest.keys())
+
+        # 2. 恢复/更新目标版本中存在的文件
+        for path_str, blob_hash in target_manifest.items():
+            content = self._read_blob(blob_hash)
+            target_file = self.vault_path / path_str
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            target_file.write_bytes(content)
+            # 从待检查列表中移除，因为它已经被正确处理
+            files_to_check.discard(path_str)
+
+        # 3. 删除那些在当前已追踪、但在目标版本中不存在的文件
+        files_to_delete = files_to_check - set(target_manifest.keys())
+        for path_str in files_to_delete:
+            file_to_delete = self.vault_path / path_str
+            if file_to_delete.exists():
+                file_to_delete.unlink()
+                print(f"删除过时文件: {path_str}")
+
+        # 4. 如果是 hard_mode，还要删除所有未追踪的文件
+        if hard_mode:
+            work_tree_files = set()
+            for file_path in self.vault_path.rglob('*'):
+                if KCUBE_DIR in file_path.parts or not file_path.is_file():
+                    continue
+                work_tree_files.add(str(file_path.relative_to(
+                    self.vault_path)).replace('\\', '/'))
+
+            untracked_to_delete = work_tree_files - set(target_manifest.keys())
+            for path_str in untracked_to_delete:
+                file_to_delete = self.vault_path / path_str
+                if file_to_delete.exists():
+                    file_to_delete.unlink()
+                    print(f"硬模式：删除未追踪文件: {path_str}")
+
+        # 5. 清空暂存区，因为工作区已经和指定版本完全一致
+        self._write_staging_area({})
+        print(f"工作区已恢复到版本 {version_hash[:8]}。")
 
     def _restore_version(self, version_hash: str, hard_mode: bool):
         target_manifest = self.db.get_version_manifest(version_hash)

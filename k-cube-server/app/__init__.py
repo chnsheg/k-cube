@@ -11,22 +11,18 @@ migrate = Migrate()
 
 
 def create_app(config_class=Config):
-    """
-    应用工厂函数 (Application Factory)。
-    """
     app = Flask(__name__)
     app.config.from_object(config_class)
 
-    # 2. 将扩展实例与创建的 app 绑定
     db.init_app(app)
     migrate.init_app(app, db)
 
-    # 3. 在工厂函数内部导入并注册蓝图
-    #    这可以确保在导入蓝图前，db 等对象已经完全初始化
     from app.api.auth import auth_bp
     from app.api.sync import sync_bp
+    from app.api.vault import vault_bp  # <--- 新增导入
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(sync_bp)
+    app.register_blueprint(vault_bp)  # <--- 新增注册
 
     return app

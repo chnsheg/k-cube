@@ -9,10 +9,11 @@ from rich.panel import Panel
 import sys
 
 from .repository import Repository
-from .utils import format_timestamp
 from .config import ConfigManager
 from .client import APIClient, APIError, AuthenticationError
 from .sync import Synchronizer
+from .utils import format_timestamp, find_vault_root  # <--- 修改这一行
+from rich.table import Table
 
 
 # 创建一个 Rich Console 实例，用于美化输出
@@ -27,32 +28,174 @@ def main():
     pass
 
 
-@main.command()
-def init():
+def get_global_config_path() -> Path:
+    """获取全局配置文件的路径，并确保目录存在。"""
+    config_dir = Path.home() / ".kcube"
+    config_dir.mkdir(exist_ok=True)
+    return config_dir / "global_config.json"
+
+
+@main.group()
+def vault():
     """
-    在当前目录初始化一个新的 K-Cube 保险库。
+    管理云端的知识库 (保险库)。
+    """
+    pass
+
+
+@vault.command(name="list")
+def vault_list():
+    """
+    列出你云端账户下的所有保险库。
+    """
+    try:
+        client = get_authenticated_client()
+        with console.status("[bold green]正在从云端获取列表...[/bold green]"):
+            vaults = client.list_vaults()
+
+        if not vaults:
+            console.print("[yellow]你在云端还没有任何保险库。[/yellow]")
+            return
+
+        table = Table(title="你的云端保险库")
+        table.add_column("名称", style="cyan", no_wrap=True)
+        table.add_column("保险库 ID (Vault ID)", style="magenta")
+
+        for v in vaults:
+            table.add_row(v['name'], v['id'])
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(Panel(f"[bold red]❌ 获取列表失败: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
+
+
+def get_authenticated_client() -> APIClient:
+    """辅助函数：加载全局配置并返回一个已认证的 API 客户端。"""
+    global_config = ConfigManager(get_global_config_path())
+    remote_url = global_config.get("remote_url")
+    api_token = global_config.get("api_token")
+    if not remote_url or not api_token:
+        console.print(Panel("[bold red]❌ 操作失败[/bold red]\n\n需要全局配置和登录信息。\n请先运行 `kv remote <url>` 和 `kv login`。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
+        sys.exit(1)
+    return APIClient(remote_url, api_token)
+
+
+@main.command()
+@click.argument('vault_id')
+@click.argument('directory', required=False)
+def clone(vault_id: str, directory: str):
+    """
+    从云端克隆一个已存在的保险库到本地。
+    """
+    # 如果用户只提供了 vault_id，我们使用一个默认的文件夹名
+    # 为了避免歧义，我们从云端获取 vault name
+    client = get_authenticated_client()
+    vault_name_for_dir = "cloned-vault"  # 默认值
+    try:
+        vaults = client.list_vaults()
+        for v in vaults:
+            if v['id'] == vault_id:
+                # 将非法字符替换为下划线，创建一个安全的文件夹名
+                safe_name = "".join(
+                    x if x.isalnum() else "_" for x in v['name'])
+                vault_name_for_dir = safe_name
+                break
+    except Exception:
+        pass  # 如果获取失败，就使用默认名
+
+    target_path = Path(
+        directory) if directory else Path.cwd() / vault_name_for_dir
+
+    if target_path.exists() and any(target_path.iterdir()):
+        console.print(Panel(f"[bold red]❌ 操作失败[/bold red]\n\n目标文件夹 '{target_path.name}' 已存在且不为空。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
+        sys.exit(1)
+
+    target_path.mkdir(exist_ok=True, parents=True)
+
+    try:
+        console.print(
+            f"正在克隆保险库 [yellow]{vault_id}[/yellow] 到 [cyan]{target_path}[/cyan]...")
+
+        # 1. 初始化本地空仓库
+        with console.status("[bold green]正在初始化本地结构...[/bold green]"):
+            repo = Repository.initialize(target_path)
+
+            # 2. 将 vault_id 和全局远程地址存入本地配置
+            global_config = ConfigManager(get_global_config_path())
+            remote_url = global_config.get("remote_url")
+            repo.config.set("vault_id", vault_id)
+            repo.config.set("remote_url", remote_url)
+
+            # --- 核心修复 ---
+            # 手动更新内存中 repo 实例的 vault_id 属性，以确保后续操作能获取到
+            repo.vault_id = vault_id
+
+        # 3. 执行第一次同步以下载所有数据
+        synchronizer = Synchronizer(repo, client)
+        synchronizer.sync()
+
+        # 4. 自动恢复到最新状态
+        latest_hash = repo.db.get_latest_version_hash()
+        if latest_hash:
+            with console.status("[bold green]正在检出最新文件...[/bold green]"):
+                repo.restore(latest_hash)
+
+        console.print(Panel(
+            f"[bold green]✅ 保险库克隆成功！[/bold green]\n\n现在可以 `cd {target_path.name}` 并开始工作了。", expand=False))
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        console.print(Panel(f"[bold red]❌ 克隆失败: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
+
+
+@main.command()
+@click.option('--name', prompt="请输入保险库名称", help="为这个新的保险库命名。")
+def init(name: str):
+    """
+    在当前目录初始化一个新的保险库，并与云端关联。
     """
     current_path = Path.cwd()
+    if find_vault_root(current_path):
+        console.print(Panel("[bold red]❌ 操作失败[/bold red]\n\n当前目录或其父目录已经是一个 K-Cube 保险库。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
+        sys.exit(1)
+
+    global_config = ConfigManager(get_global_config_path())
+    remote_url = global_config.get("remote_url")
+    api_token = global_config.get("api_token")
+    if not remote_url or not api_token:
+        console.print(Panel("[bold red]❌ 操作失败[/bold red]\n\n需要全局配置和登录信息。\n请先运行 `kv remote <url>` 和 `kv login`。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
+        sys.exit(1)
+
     try:
+        with console.status("[bold green]正在云端创建保险库记录...[/bold green]"):
+            client = APIClient(remote_url, api_token)
+            vault_info = client.create_vault(name)
+            vault_id = vault_info['id']
+
         repo = Repository.initialize(current_path)
 
-        # 使用 Rich Panel 创建一个漂亮的成功提示框
+        repo.config.set("vault_id", vault_id)
+        repo.config.set("remote_url", remote_url)  # 也存一份在本地，方便未来操作
+
         success_message = (
-            f"[bold green]✅ K-Cube 保险库初始化成功！[/bold green]\n\n"
-            f"路径: [cyan]{repo.vault_path}[/cyan]"
+            f"[bold green]✅ K-Cube 保险库 '{name}' 初始化成功！[/bold green]\n\n"
+            f"本地路径: [cyan]{repo.vault_path}[/cyan]\n"
+            f"云端 ID: [yellow]{vault_id}[/yellow]"
         )
         console.print(
             Panel(success_message, title="[bold]初始化完成[/bold]", expand=False))
 
-    except FileExistsError as e:
-        error_message = f"[bold red]❌ 初始化失败[/bold red]\n\n{e}"
-        console.print(
-            Panel(error_message, title="[bold]错误[/bold]", expand=False, border_style="red"))
     except Exception as e:
-        # 捕获其他潜在的错误
-        error_message = f"[bold red]❌ 发生未知错误[/bold red]\n\n{e}"
-        console.print(
-            Panel(error_message, title="[bold]错误[/bold]", expand=False, border_style="red"))
+        console.print(Panel(f"[bold red]❌ 初始化失败: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
 
 
 @main.command()
@@ -136,9 +279,10 @@ def add(paths: Tuple[str]):
         console.print("[bold red]错误：[/bold red]当前目录不是一个 K-Cube 保险库。")
         sys.exit(1)
 
+    console.print("正在更新暂存区...")
     path_objs = [Path(p).resolve() for p in paths]
     repo.add(path_objs)
-    console.print(f"已处理 {len(paths)} 个路径的变更。使用 'kv status' 查看暂存状态。")
+    console.print("\n暂存区更新完成。使用 'kv status' 查看状态。")
 
 
 @main.command(name='commit')
@@ -304,64 +448,64 @@ def log(file_path: str):
 
 @main.command()
 def login():
-    """登录到 K-Cube 云端服务。"""
-    repo = Repository.find()
-    if not repo:
-        console.print("[bold red]错误：[/bold red]请在 K-Cube 保险库内执行登录。")
-        sys.exit(1)
-
-    config = ConfigManager(repo.kcube_path)
-    remote_url = config.get("remote_url")
+    """
+    [全局命令] 登录到 K-Cube 云端服务。
+    """
+    global_config = ConfigManager(get_global_config_path())
+    remote_url = global_config.get("remote_url")
     if not remote_url:
-        console.print(
-            "[bold red]错误：[/bold red]未设置远程仓库。请先使用 'kv remote add <url>'。")
+        console.print(Panel("[bold red]❌ 操作失败[/bold red]\n\n请先使用 `kv remote <url>` 设置远程仓库地址。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
         sys.exit(1)
 
     email = click.prompt("邮箱")
     password = click.prompt("密码", hide_input=True)
 
     try:
-        client = APIClient(remote_url)
-        token = client.login(email, password)
-        config.set("api_token", token)
-        console.print("[bold green]✅ 登录成功！认证信息已保存。[/bold green]")
+        with console.status("[bold green]正在登录...[/bold green]"):
+            client = APIClient(remote_url)
+            token = client.login(email, password)
+
+        global_config.set("api_token", token)
+        console.print(
+            Panel("✅ [bold green]登录成功！[/bold green]\n\n全局认证信息已保存。", expand=False))
     except (APIError, AuthenticationError) as e:
-        console.print(f"[bold red]❌ 登录失败: {e}[/bold red]")
+        console.print(Panel(f"[bold red]❌ 登录失败: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
     except Exception as e:
-        console.print(f"[bold red]❌ 发生未知错误: {e}[/bold red]")
+        console.print(Panel(f"[bold red]❌ 发生未知错误: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
 
 
 @main.command()
 @click.argument('url')
 def remote(url: str):
     """
-    设置此本地保险库关联的远程仓库 URL。
+    [全局命令] 设置 K-Cube 云端服务的远程仓库 URL。
     """
-    repo = Repository.find()
-    if not repo:
-        console.print("[bold red]错误：[/bold red]请在 K-Cube 保险库内设置远程地址。")
-        sys.exit(1)
-
-    config = ConfigManager(repo.kcube_path)
-    config.set("remote_url", url)
-    console.print(f"[bold green]✅ 远程仓库已设置为: {url}[/bold green]")
+    global_config = ConfigManager(get_global_config_path())
+    global_config.set("remote_url", url)
+    console.print(Panel(f"✅ 全局远程仓库已设置为: [cyan]{url}[/cyan]", expand=False))
 
 
 @main.command()
 def sync():
-    """与远程仓库同步变更。"""
+    """与远程仓库同步当前保险库的变更。"""
     repo = Repository.find()
     if not repo:
-        console.print("[bold red]错误：[/bold red]当前目录不是一个 K-Cube 保险库。")
+        console.print(Panel("[bold red]❌ 操作失败[/bold red]\n\n当前目录不是一个 K-Cube 保险库。请先运行 `kv init`。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
         sys.exit(1)
 
-    config = ConfigManager(repo.kcube_path)
-    remote_url = config.get("remote_url")
-    api_token = config.get("api_token")
+    remote_url = repo.config.get("remote_url")
+    vault_id = repo.config.get("vault_id")
 
-    if not remote_url or not api_token:
-        console.print("[bold red]错误：[/bold red]未配置远程仓库或未登录。")
-        console.print("请先使用 'kv remote add <url>' 和 'kv login'。")
+    global_config = ConfigManager(get_global_config_path())
+    api_token = global_config.get("api_token")
+
+    if not remote_url or not api_token or not vault_id:
+        console.print(Panel("[bold red]❌ 配置不完整[/bold red]\n\n保险库配置或全局登录信息不完整。请检查配置或重新登录。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
         sys.exit(1)
 
     try:
@@ -369,9 +513,13 @@ def sync():
         synchronizer = Synchronizer(repo, client)
         synchronizer.sync()
     except AuthenticationError:
-        console.print(
-            "[bold red]❌ 认证失败！你的 token 可能已过期，请重新使用 'kv login' 登录。[/bold red]")
+        console.print(Panel("[bold red]❌ 认证失败！[/bold red]\n\n你的 token 可能已过期，请重新使用 `kv login` 登录。",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
     except APIError as e:
-        console.print(f"[bold red]❌ 同步失败: {e}[/bold red]")
+        console.print(Panel(f"[bold red]❌ 同步失败: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))
     except Exception as e:
-        console.print(f"[bold red]❌ 发生未知错误: {e}[/bold red]")
+        import traceback
+        traceback.print_exc()
+        console.print(Panel(f"[bold red]❌ 发生未知错误: {e}[/bold red]",
+                            title="[bold]错误[/bold]", expand=False, border_style="red"))

@@ -1,0 +1,13 @@
+[project]
+name = "k_cube"
+version = "0.1.0"
+description = "A local-first knowledge management system with a custom version control CLI."
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+kv = "k_cube.cli:main"

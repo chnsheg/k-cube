@@ -231,3 +231,70 @@ class Database:
         )
         result = cursor.fetchone()
         return result[0] if result else None
+
+    def get_all_version_hashes(self) -> List[str]:
+        """获取数据库中所有版本的哈希列表。"""
+        if not self.conn:
+            self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT hash FROM versions")
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_all_blob_hashes(self) -> List[str]:
+        """获取数据库中所有 blob 的哈希列表。"""
+        if not self.conn:
+            self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT hash FROM blobs")
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_version_data(self, version_hash: str) -> Optional[Dict[str, Any]]:
+        """获取单个版本的完整数据，用于上传。"""
+        if not self.conn:
+            self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT timestamp, message_json, author FROM versions WHERE hash = ?",
+            (version_hash,)
+        )
+        version_row = cursor.fetchone()
+        if not version_row:
+            return None
+
+        manifest = self.get_version_manifest(version_hash)
+
+        return {
+            "hash": version_hash,
+            "timestamp": version_row[0],
+            "message": json.loads(version_row[1]),
+            "author": version_row[2],
+            "manifest": manifest
+        }
+
+    def bulk_insert_versions(self, versions_data: List[Dict]):
+        """批量插入从服务器下载的版本数据。"""
+        if not self.conn:
+            self.connect()
+
+        versions_to_insert = []
+        version_files_to_insert = []
+
+        for version in versions_data:
+            versions_to_insert.append(
+                (version['hash'], version['timestamp'], json.dumps(
+                    version['message']), version.get('author'))
+            )
+            for path, blob_hash in version['manifest'].items():
+                version_files_to_insert.append(
+                    (version['hash'], path, blob_hash)
+                )
+
+        with self.conn:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO versions (hash, timestamp, message_json, author) VALUES (?, ?, ?, ?)",
+                versions_to_insert
+            )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO version_files (version_hash, file_path, blob_hash) VALUES (?, ?, ?)",
+                version_files_to_insert
+            )

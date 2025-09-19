@@ -10,6 +10,9 @@ import sys
 
 from .repository import Repository
 from .utils import format_timestamp
+from .config import ConfigManager
+from .client import APIClient, APIError, AuthenticationError
+from .sync import Synchronizer
 
 
 # 创建一个 Rich Console 实例，用于美化输出
@@ -297,3 +300,78 @@ def log(file_path: str):
         console.print(Panel(panel_content, expand=False))
         console.print(" │")
         console.print(" ▼")
+
+
+@main.command()
+def login():
+    """登录到 K-Cube 云端服务。"""
+    repo = Repository.find()
+    if not repo:
+        console.print("[bold red]错误：[/bold red]请在 K-Cube 保险库内执行登录。")
+        sys.exit(1)
+
+    config = ConfigManager(repo.kcube_path)
+    remote_url = config.get("remote_url")
+    if not remote_url:
+        console.print(
+            "[bold red]错误：[/bold red]未设置远程仓库。请先使用 'kv remote add <url>'。")
+        sys.exit(1)
+
+    email = click.prompt("邮箱")
+    password = click.prompt("密码", hide_input=True)
+
+    try:
+        client = APIClient(remote_url)
+        token = client.login(email, password)
+        config.set("api_token", token)
+        console.print("[bold green]✅ 登录成功！认证信息已保存。[/bold green]")
+    except (APIError, AuthenticationError) as e:
+        console.print(f"[bold red]❌ 登录失败: {e}[/bold red]")
+    except Exception as e:
+        console.print(f"[bold red]❌ 发生未知错误: {e}[/bold red]")
+
+
+@main.command()
+@click.argument('url')
+def remote(url: str):
+    """
+    设置此本地保险库关联的远程仓库 URL。
+    """
+    repo = Repository.find()
+    if not repo:
+        console.print("[bold red]错误：[/bold red]请在 K-Cube 保险库内设置远程地址。")
+        sys.exit(1)
+
+    config = ConfigManager(repo.kcube_path)
+    config.set("remote_url", url)
+    console.print(f"[bold green]✅ 远程仓库已设置为: {url}[/bold green]")
+
+
+@main.command()
+def sync():
+    """与远程仓库同步变更。"""
+    repo = Repository.find()
+    if not repo:
+        console.print("[bold red]错误：[/bold red]当前目录不是一个 K-Cube 保险库。")
+        sys.exit(1)
+
+    config = ConfigManager(repo.kcube_path)
+    remote_url = config.get("remote_url")
+    api_token = config.get("api_token")
+
+    if not remote_url or not api_token:
+        console.print("[bold red]错误：[/bold red]未配置远程仓库或未登录。")
+        console.print("请先使用 'kv remote add <url>' 和 'kv login'。")
+        sys.exit(1)
+
+    try:
+        client = APIClient(remote_url, api_token)
+        synchronizer = Synchronizer(repo, client)
+        synchronizer.sync()
+    except AuthenticationError:
+        console.print(
+            "[bold red]❌ 认证失败！你的 token 可能已过期，请重新使用 'kv login' 登录。[/bold red]")
+    except APIError as e:
+        console.print(f"[bold red]❌ 同步失败: {e}[/bold red]")
+    except Exception as e:
+        console.print(f"[bold red]❌ 发生未知错误: {e}[/bold red]")

@@ -473,3 +473,37 @@ class Repository:
         self.db.insert_version(version_hash, timestamp,
                                revert_message, new_manifest)
         print(f"已创建 Revert 提交: {version_hash}")
+
+    def _read_blob(self, blob_hash: str, compressed: bool = False) -> bytes:
+        """从对象库读取一个 blob。"""
+        blob_path = self.versions_path / blob_hash[:2] / blob_hash[2:]
+        if not blob_path.exists():
+            raise IOError(f"数据损坏：找不到 blob 文件 {blob_hash}")
+
+        content = blob_path.read_bytes()
+
+        if compressed:
+            return content
+        return decompress_blob(content)
+
+    def _write_blob(self, blob_hash: str, content: bytes, is_compressed: bool = False):
+        """向对象库写入一个 blob。"""
+        if self.db.blob_exists(blob_hash):
+            return  # Blob 已存在，无需写入
+
+        blob_dir = self.versions_path / blob_hash[:2]
+        blob_dir.mkdir(exist_ok=True)
+        blob_file = blob_dir / blob_hash[2:]
+
+        final_content = content if is_compressed else compress_blob(content)
+
+        blob_file.write_bytes(final_content)
+
+        # 注意：写入 blob 时，通常也需要更新数据库记录
+        # 这里假设下载的 blob 已经在服务器端计算好了大小
+        # 在一个完整的实现中，我们可能需要解压来获取 uncompressed_size
+        uncompressed_size = len(decompress_blob(
+            final_content)) if is_compressed else len(content)
+        compressed_size = len(final_content)
+
+        self.db.insert_blob(blob_hash, uncompressed_size, compressed_size)

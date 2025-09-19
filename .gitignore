@@ -1,5 +1,11 @@
-k_cube.egg-info/
+*.egg-info/
 
 test/
 
 k_cube/__pycache__/
+
+venv/
+
+*.db
+
+__pycache__/

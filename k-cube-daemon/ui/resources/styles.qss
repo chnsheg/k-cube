@@ -1,0 +1,79 @@
+/* k-cube-daemon/ui/resources/styles.qss */
+
+/* --- 全局窗口样式 --- */
+QMainWindow, QDialog {
+    background-color: #f2f2f7; /* 苹果风格的浅灰色背景 */
+    font-family: ".SF NS Text", "Segoe UI", "Arial", sans-serif; /* 优先使用系统UI字体 */
+}
+
+/* --- 标签样式 --- */
+QLabel {
+    color: #333;
+    font-size: 14px;
+}
+
+QLabel#titleLabel { /* 用于标题的大标签 */
+    font-size: 18px;
+    font-weight: 600;
+    color: #1c1c1e;
+}
+
+QLabel#pathLabel { /* 用于显示路径的标签 */
+    color: #888;
+    font-style: italic;
+    background-color: #e9e9ed;
+    border: 1px solid #dcdce1;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 13px;
+}
+
+/* --- 列表样式 --- */
+QListWidget {
+    background-color: #ffffff;
+    border: 1px solid #dcdce1;
+    border-radius: 8px;
+    padding: 5px;
+    font-size: 14px;
+}
+
+QListWidget::item {
+    padding: 10px 8px;
+    border-radius: 6px; /* 列表项也带圆角 */
+}
+
+QListWidget::item:hover {
+    background-color: #e9e9ed;
+}
+
+QListWidget::item:selected {
+    background-color: #007aff;
+    color: white;
+}
+
+/* --- 按钮基础样式 --- */
+QPushButton {
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    outline: none; /* 去掉点击时的虚线框 */
+}
+
+QPushButton:pressed {
+    /* 点击时的效果 */
+    background-color: #0056b3;
+}
+
+/* --- 主按钮 (Primary Button) --- */
+QPushButton#primaryButton {
+    background-color: #007aff;
+    color: white;
+}
+
+/* --- 次要按钮 (Secondary Button) --- */
+QPushButton#secondaryButton {
+    background-color: #e9e9ed;
+    color: #333;
+}

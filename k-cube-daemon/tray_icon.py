@@ -23,7 +23,9 @@ class TrayIcon(QSystemTrayIcon):
 
     def _create_menu(self):
         menu = QMenu()
-        self.action_open = menu.addAction("打开 K-Cube")
+        self.action_open = menu.addAction("显示主窗口")
+        self.action_settings = menu.addAction("账户与设置...")  # 重命名
+        menu.addSeparator()
         self.action_quit = menu.addAction("退出")
         self.setContextMenu(menu)
 

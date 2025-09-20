@@ -43,6 +43,14 @@ class APIClient:
         except requests.RequestException as e:
             raise APIError(f"网络连接错误: {e}") from e
 
+    def register(self, email: str, password: str) -> dict:
+        """向服务器发送注册请求。"""
+        register_url = self.base_url + "/auth/register"
+        response = requests.post(
+            register_url, json={"email": email, "password": password})
+        response.raise_for_status()
+        return response.json()
+
     # --- 新增 Vault 管理方法 ---
     def create_vault(self, name: str) -> dict:
         return self._request("POST", "api/v1/vaults", json={"name": name})
@@ -52,6 +60,10 @@ class APIClient:
         从云端获取当前用户的所有保险库列表。
         """
         return self._request("GET", "api/v1/vaults")
+
+    def get_vault_details(self, vault_id: str) -> dict:
+        """获取单个保险库的详细信息。"""
+        return self._request("GET", f"api/v1/vaults/{vault_id}")
 
     # --- 修改 Sync 方法以包含 vault_id ---
     def check_sync_state(self, vault_id: str, local_versions: List[str]) -> dict:

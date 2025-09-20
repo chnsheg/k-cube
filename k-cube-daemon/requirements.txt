@@ -12,3 +12,5 @@ Pillow
 # 我们需要复用 k-cube 的核心逻辑
 # 注意：这里我们假设 k-cube CLI 已经通过 pip install -e . 安装在同一个虚拟环境中
 k-cube
+
+qtawesome

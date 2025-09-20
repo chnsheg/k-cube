@@ -34,3 +34,17 @@ def list_vaults():
 
     vaults = user.vaults.all()
     return jsonify([{'id': v.id, 'name': v.name} for v in vaults])
+
+
+@vault_bp.route('/<string:vault_id>', methods=['GET'])
+def get_vault(vault_id):
+    """获取单个保险库的详细信息，用于验证。"""
+    user = get_user_from_token()
+    if not user:
+        return jsonify({'detail': '需要认证'}), 401
+
+    vault = Vault.query.filter_by(id=vault_id, user_id=user.id).first()
+    if not vault:
+        return jsonify({'error': '保险库未找到或无权访问'}), 404
+
+    return jsonify({'id': vault.id, 'name': vault.name})

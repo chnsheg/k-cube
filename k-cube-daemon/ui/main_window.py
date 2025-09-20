@@ -14,6 +14,7 @@ from .components.title_bar import TitleBar
 from .components.vault_list_item import VaultListItem
 from .theme import Color, Font, Size, QSS, STYLESHEET
 import qtawesome as qta
+from .components.toast import Toast  # 确保导入
 
 
 class MainWindow(QMainWindow):
@@ -353,8 +354,11 @@ class MainWindow(QMainWindow):
             item = self.vault_list.item(i)
             widget = self.vault_list.itemWidget(item)
             if widget and widget.path == vault_path:
-                # --- 核心修复：传递 message ---
-                widget.set_status(status, message)
+                widget.set_status(status)
+                if status in ["success", "error"] and message:
+                    # --- 核心修改：创建一个新的、无父级的 Toast 实例 ---
+                    toast = Toast()
+                    toast.show_toast(message, status=status)
                 break
 
     def closeEvent(self, event):

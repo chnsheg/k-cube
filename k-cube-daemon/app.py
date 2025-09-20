@@ -226,47 +226,52 @@ class KCubeApplication(QApplication):
     def start_worker(self, vault_path: str):
         if not self.client:
             return
+
         thread = QThread()
         worker = Worker(vault_path, self.client)
         worker.moveToThread(thread)
+
         worker.status_changed.connect(self.main_window.update_vault_status)
-        worker.finished.connect(self.on_worker_finished)
+        # --- 核心修复：worker 结束后，让线程也退出 ---
+        worker.finished.connect(thread.quit)
+        # --- 核心修复：线程结束后，再进行对象清理 ---
+        thread.finished.connect(lambda: self.on_worker_finished(vault_path))
+
         thread.started.connect(worker.run)
         thread.start()
+
         self.worker_pool[vault_path] = {'worker': worker, 'thread': thread}
 
     def on_worker_finished(self, vault_path):
         if vault_path in self.worker_pool:
+            # 清理 worker 和 thread 对象
+            worker_data = self.worker_pool[vault_path]
+            worker_data['worker'].deleteLater()
+            worker_data['thread'].deleteLater()
             del self.worker_pool[vault_path]
-            print(f"Worker for {Path(vault_path).name} has finished.")
+            print(
+                f"Worker for {Path(vault_path).name} has finished and been cleaned up.")
 
     @pyqtSlot(str)  # 明确这是一个槽函数
     def trigger_manual_sync(self, vault_path: str):
-        """手动触发指定保险库的同步。"""
-        print(f"主线程收到手动同步请求 for: {vault_path}")  # 调试打印
         if vault_path in self.worker_pool:
             worker_data = self.worker_pool[vault_path]
             worker_instance = worker_data['worker']
-
-            # 安全地调用在另一个线程中的对象的方法
-            # 由于 perform_sync 不带参数且是自包含的，直接调用通常是安全的
-            # 如果更复杂，应使用信号槽机制
             if worker_instance:
-                print(f"正在调用 worker for {vault_path} 的 perform_sync...")
+                # 使用 invokeMethod 确保线程安全调用
                 worker_instance.perform_sync()
         else:
-            print(f"无法手动同步：找不到路径为 {vault_path} 的 worker。")
-            # --- 核心修复：向用户显示错误 ---
             if self.main_window:
                 self.main_window.update_vault_status(
-                    vault_path, "error", f"找不到对应的后台监控进程。")
+                    vault_path, "error", "监控进程未运行，无法同步。")
 
     def stop_all_workers(self):
         for path, worker_data in list(self.worker_pool.items()):
             if worker_data['thread'].isRunning():
+                # --- 核心修复：通过 worker 的 stop 方法来请求停止 ---
                 worker_data['worker'].stop()
-                worker_data['thread'].quit()
-                worker_data['thread'].wait()
+                # 等待线程自然结束
+                worker_data['thread'].wait(2000)  # 等待最多2秒
 
     def quit_app(self):
         print("正在退出 K-Cube 守护进程...")

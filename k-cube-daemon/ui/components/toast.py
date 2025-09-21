@@ -1,9 +1,8 @@
-# k-cube-daemon/ui/components/toast.py
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QApplication
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QApplication
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QPoint, pyqtProperty
-from PyQt6.QtGui import QPainter, QColor
+from PyQt6.QtGui import QPainter, QColor, QPalette, QFont, QLinearGradient, QPen
 
-from ui.theme import Color, Font
+from ui.theme import Color, Font as ThemeFont
 import qtawesome as qta
 
 
@@ -14,53 +13,85 @@ class Toast(QWidget):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.SplashScreen
+            Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(18, 14, 20, 14)  # 调整内边距
+        self.layout.setSpacing(12)
+
         self.icon_label = QLabel(self)
         self.text_label = QLabel(self)
 
-        self.text_label.setStyleSheet(
-            f"color: {Color.TEXT_PRIMARY.name()}; {Font.BODY} font-weight: 500;")
+        # 直接设置字体和颜色
+        font = QFont()
+        font.fromString(ThemeFont.BODY.split(';')[0])
+        font.setPixelSize(14)
+        font.setWeight(QFont.Weight.Medium)
+        self.text_label.setFont(font)
+
+        palette = self.text_label.palette()
+        palette.setColor(QPalette.ColorRole.WindowText, Color.TEXT_PRIMARY)
+        self.text_label.setPalette(palette)
 
         self.layout.addWidget(self.icon_label)
         self.layout.addWidget(self.text_label)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 40))
-        shadow.setOffset(0, 3)
-        self.setGraphicsEffect(shadow)
+        # 我们将手动绘制阴影，所以移除 QGraphicsDropShadowEffect
 
-        # 动画目标直接使用 QWidget 的原生 "windowOpacity" 属性
-        self.animation = QPropertyAnimation(self, b"windowOpacity")
+        self.animation = QPropertyAnimation(self, b"pos")
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.setDuration(300)
 
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.timeout.connect(self.close_toast)
 
-        self.border_color = Color.CONTENT_BACKGROUND
-
-    # --- 核心修复：删除 get_opacity, set_opacity, 和 windowOpacity = pyqtProperty(...) ---
+        self.status_color = Color.PRIMARY
 
     def paintEvent(self, event):
-        """自定义绘制事件，用于绘制带圆角的背景和边框。"""
+        """
+        终极绘制方案：使用双层绘制实现辉光和毛玻璃效果。
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        painter.setBrush(Color.CONTENT_BACKGROUND)
-        pen = painter.pen()
-        pen.setWidth(1)
-        pen.setColor(self.border_color)
-        painter.setPen(pen)
-
         rect = self.rect()
-        painter.drawRoundedRect(
-            rect.x(), rect.y(), rect.width() - 1, rect.height() - 1, 8, 8)
+
+        # 1. 绘制外层辉光/阴影
+        shadow_margin = 10
+        shadow_rect = QRect(
+            rect.x() + shadow_margin, rect.y() + shadow_margin,
+            rect.width() - 2 * shadow_margin, rect.height() - 2 * shadow_margin
+        )
+
+        # 创建一个从状态色到完全透明的路径渐变来模拟辉光
+        gradient = QLinearGradient(
+            0, 0, shadow_rect.width(), shadow_rect.height())
+        glow_color = QColor(self.status_color)
+        glow_color.setAlphaF(0.2)  # 辉光的不透明度
+        gradient.setColorAt(0, glow_color)
+        gradient.setColorAt(1, QColor(0, 0, 0, 0))
+
+        painter.setBrush(gradient)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(shadow_rect, 12, 12)
+
+        # 2. 绘制内层内容背景 (半透明毛玻璃效果)
+        content_margin = shadow_margin + 2
+        content_rect = QRect(
+            rect.x() + content_margin, rect.y() + content_margin,
+            rect.width() - 2 * content_margin, rect.height() - 2 * content_margin
+        )
+
+        bg_color = QColor(Color.CONTENT_BACKGROUND)
+        bg_color.setAlphaF(0.9)  # 90% 不透明的白色
+
+        painter.setBrush(bg_color)
+        painter.setPen(QPen(Color.BORDER, 1))
+        painter.drawRoundedRect(content_rect, 10, 10)
 
     def show_toast(self, message: str, status: str = "success"):
         self.animation.stop()
@@ -68,42 +99,57 @@ class Toast(QWidget):
 
         self.text_label.setText(message)
 
+        is_syncing_process = status in [
+            "upload", "download", "bidirectional", "syncing"]
+
         if status == "success":
-            self.border_color = Color.GREEN
+            self.status_color = Color.GREEN
             icon = qta.icon('fa5s.check-circle', color=Color.GREEN)
         elif status == "error":
-            self.border_color = Color.RED
+            self.status_color = Color.RED
             icon = qta.icon('fa5s.times-circle', color=Color.RED)
-        else:  # info
-            self.border_color = Color.PRIMARY
-            icon = qta.icon('fa5s.info-circle', color=Color.PRIMARY)
+        else:  # info and syncing
+            self.status_color = Color.PRIMARY
+            icon_name = {
+                "upload": "fa5s.arrow-up", "download": "fa5s.arrow-down",
+                "bidirectional": "fa5s.exchange-alt", "syncing": "fa5s.sync-alt"
+            }.get(status, "fa5s.info-circle")
+            anim = qta.Spin(self.icon_label) if is_syncing_process else None
+            icon = qta.icon(icon_name, color=Color.PRIMARY, animation=anim)
 
-        self.icon_label.setPixmap(icon.pixmap(18, 18))
+        self.icon_label.setPixmap(icon.pixmap(20, 20))
+
+        self.adjustSize()
+        # 由于绘制区域变大，我们需要重新计算整体尺寸
+        final_width = self.layout.sizeHint().width() + 40
+        final_height = self.layout.sizeHint().height() + 30
+        self.setFixedSize(final_width, final_height)
+
+        # update() 触发 paintEvent
         self.update()
 
-        self.adjustSize()
-        self.setContentsMargins(15, 12, 18, 12)
-        self.layout.setSpacing(10)
-        self.adjustSize()
-
         screen_geometry = QApplication.primaryScreen().availableGeometry()
-
         pos_x = screen_geometry.x() + (screen_geometry.width() - self.width()) // 2
         pos_y = screen_geometry.y() + 30
-        self.move(pos_x, pos_y)
+        start_pos = QPoint(pos_x, screen_geometry.y() - self.height())
+        end_pos = QPoint(pos_x, pos_y)
 
-        # 淡入动画
-        self.animation.setStartValue(0.0)
-        self.animation.setEndValue(1.0)
+        self.animation.setStartValue(start_pos)
+        self.animation.setEndValue(end_pos)
 
+        self.move(start_pos)
         self.show()
+
         self.animation.start()
 
-        self.hide_timer.start(2500)
+        if not is_syncing_process:
+            self.hide_timer.start(2500)
 
     def close_toast(self):
         self.animation.stop()
-        self.animation.setStartValue(self.windowOpacity())
-        self.animation.setEndValue(0.0)
+        start_pos = self.pos()
+        end_pos = QPoint(start_pos.x(), -self.height() - 20)
+        self.animation.setStartValue(start_pos)
+        self.animation.setEndValue(end_pos)
         self.animation.finished.connect(self.close)
         self.animation.start()

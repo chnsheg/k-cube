@@ -1,13 +1,34 @@
-# k_cube/sync.py
-
 import base64
 from rich.console import Console
 from rich.progress import Progress
+from dataclasses import dataclass
 
 from .repository import Repository
 from .client import APIClient, APIError
 
 console = Console()
+
+
+@dataclass
+class SyncResult:
+    """封装同步操作的结果。"""
+    versions_uploaded: int = 0
+    versions_downloaded: int = 0
+
+    @property
+    def has_changes(self) -> bool:
+        return self.versions_uploaded > 0 or self.versions_downloaded > 0
+
+    @property
+    def direction(self) -> str:
+        if self.versions_uploaded > 0 and self.versions_downloaded > 0:
+            return "bidirectional"
+        elif self.versions_uploaded > 0:
+            return "upload"
+        elif self.versions_downloaded > 0:
+            return "download"
+        else:
+            return "none"
 
 
 class Synchronizer:
@@ -19,57 +40,39 @@ class Synchronizer:
         self.repo = repo
         self.client = api_client
 
-    def sync(self) -> bool:
+    def sync(self) -> SyncResult:
         """
-        执行一个完整的双向同步周期。
+        执行一个完整的双向同步周期，并返回详细结果。
         """
-        # --- 关键修改：检查 vault_id ---
-        if not self.repo.vault_id:
-            console.print("[bold red]错误：本地保险库未与云端关联 (缺少 vault_id)。[/bold red]")
-            raise ValueError("缺少 vault_id")
-
         console.print("🔄 开始同步...")
 
-        with console.status("[bold green]正在检查远程状态...[/bold green]"):
-            local_versions = self.repo.db.get_all_version_hashes()
-            # --- 关键修改：传入 vault_id ---
-            sync_state = self.client.check_sync_state(
-                self.repo.vault_id, local_versions)
-
-        console.print("🔄 开始同步...")
-
-        # 1. 检查本地与远程的状态差异
-        with console.status("[bold green]正在检查远程状态...[/bold green]"):
-            local_versions = self.repo.db.get_all_version_hashes()
-            sync_state = self.client.check_sync_state(
-                self.repo.vault_id, local_versions)
+        local_versions = self.repo.db.get_all_version_hashes()
+        sync_state = self.client.check_sync_state(
+            self.repo.vault_id, local_versions)
 
         versions_to_upload = sync_state.get('versions_to_upload', [])
         versions_to_download = sync_state.get('versions_to_download', [])
 
-        console.print(f"  - [cyan]本地有 {len(local_versions)} 个版本。[/cyan]")
-        console.print(
-            f"  - [yellow]{len(versions_to_upload)}[/yellow] 个版本需要上传。")
-        console.print(
-            f"  - [green]{len(versions_to_download)}[/green] 个版本需要下载。")
+        result = SyncResult(
+            versions_uploaded=len(versions_to_upload),
+            versions_downloaded=len(versions_to_download)
+        )
 
-        did_download = False
-
-        # 2. 推送本地变更到远程
         if versions_to_upload:
+            console.print(
+                f"  - [yellow]正在上传 {result.versions_uploaded} 个版本...[/yellow]")
             self._push_changes(versions_to_upload)
-
-        # 3. 拉取远程变更到本地
         if versions_to_download:
+            console.print(
+                f"  - [green]正在下载 {result.versions_downloaded} 个版本...[/green]")
             self._pull_changes(versions_to_download)
-            did_download = True  # <--- 修改3：如果下载了，就设置标志位
 
-        if not versions_to_upload and not versions_to_download:
+        if not result.has_changes:
             console.print("[bold green]✅ 你的知识库已经是最新的了！[/bold green]")
         else:
             console.print("[bold green]✅ 同步完成！[/bold green]")
 
-        return did_download  # <--- 修改4：返回标志位
+        return result
 
     def _push_changes(self, version_hashes: list):
         """处理上传逻辑。"""

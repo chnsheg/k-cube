@@ -78,4 +78,51 @@ STYLESHEET = f"""
     QListWidget::item:selected {{
         background-color: transparent;
     }}
+        /* --- 核心修改：自定义滚动条样式 --- */
+    QScrollBar:vertical {{
+        border: none;
+        background: {Color.BACKGROUND.name()};
+        width: 10px;
+        margin: 10px 0 10px 0;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {Color.BORDER.name()};
+        min-height: 20px;
+        border-radius: 5px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: {Color.TEXT_SECONDARY.name()};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        border: none;
+        background: none;
+        height: 0px;
+    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
+    }}
+
+    /* --- 核心修改：自定义菜单样式 --- */
+    QMenu {{
+        background-color: {Color.CONTENT_BACKGROUND.name()};
+        border: 1px solid {Color.BORDER.name()};
+        border-radius: 8px;
+        padding: 5px;
+    }}
+    QMenu::item {{
+        padding: 8px 20px 8px 15px;
+        border-radius: 6px;
+    }}
+    QMenu::item:selected {{
+        background-color: {Color.SECONDARY.name()};
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {Color.BORDER.name()};
+        margin-left: 10px;
+        margin-right: 10px;
+    }}
+    QMenu::indicator {{ /* 隐藏子菜单箭头 */
+        width: 0px;
+    }}
 """

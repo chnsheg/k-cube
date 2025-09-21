@@ -1,7 +1,7 @@
 # k-cube-daemon/ui/components/vault_list_item.py
-# (替换完整内容)
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import Qt, pyqtSignal
+
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QMenu
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 from PyQt6.QtGui import QFontMetrics, QPainter
 from pathlib import Path
 from ui.theme import Color, Font
@@ -11,18 +11,25 @@ from .toast import Toast
 
 class VaultListItem(QWidget):
     sync_requested = pyqtSignal()
+    delete_from_cloud_requested = pyqtSignal()
 
     def __init__(self, path: str, parent=None):
         super().__init__(parent)
         self.path = path
-        self.is_selected = False  # 新增选中状态
+        self.is_selected = False
 
-        # --- 核心修改：让 Widget 自己可绘制 ---
+        # 让 Widget 自己可绘制背景和边框
         self.setAutoFillBackground(True)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(15, 0, 10, 0)
         main_layout.setSpacing(15)
+
+        self.more_button = QPushButton(
+            qta.icon('fa5s.ellipsis-h', color=Color.TEXT_SECONDARY), "")
+        self.more_button.setFixedSize(32, 32)
+        # ... (设置样式)
+        self.more_button.clicked.connect(self.show_menu)
 
         # --- 状态灯 ---
         self.status_light = QLabel()
@@ -36,6 +43,7 @@ class VaultListItem(QWidget):
 
         fm = QFontMetrics(self.font())
         self.setToolTip(path)
+        # 根据父窗口宽度动态计算截断宽度会更理想，这里用一个较大的固定值
         elided_path = fm.elidedText(path, Qt.TextElideMode.ElideMiddle, 300)
 
         self.name_label = QLabel(Path(path).name)
@@ -61,11 +69,23 @@ class VaultListItem(QWidget):
         main_layout.addWidget(self.status_light)
         main_layout.addWidget(text_widget, 1)  # 拉伸因子为1
         main_layout.addWidget(self.sync_button)
+        main_layout.addWidget(self.more_button)  # 添加到布局
 
-        # --- 核心修复：确保所有内容在更大的行高内垂直居中 ---
+        # 确保所有内容在更大的行高内垂直居中
         main_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.set_status("idle")
+
+    def show_menu(self):
+        menu = QMenu(self)
+        # remove_local_action = menu.addAction("从列表移除")
+        delete_cloud_action = menu.addAction("从云端永久删除...")
+
+        action = menu.exec(self.mapToGlobal(
+            QPoint(self.more_button.x(), self.more_button.y() + self.more_button.height())))
+
+        if action == delete_cloud_action:
+            self.delete_from_cloud_requested.emit()
 
     def paintEvent(self, event):
         """自定义绘制事件，用于绘制卡片的背景、边框和选中状态。"""
@@ -94,33 +114,25 @@ class VaultListItem(QWidget):
             self.update()  # 触发 paintEvent
 
     def set_status(self, status: str, message: str = ""):
-        # ... (此方法保持不变) ...
+        """更新列表项的状态指示灯和同步按钮。"""
+        is_syncing_process = status in [
+            "syncing", "upload", "download", "bidirectional"]
+
         color_map = {
             "idle": Color.TEXT_SECONDARY.name(),
-            "syncing": Color.PRIMARY.name(),
             "success": Color.GREEN.name(),
             "error": Color.RED.name()
         }
-        color = color_map.get(status, Color.TEXT_SECONDARY.name())
-
-        is_syncing = (status == "syncing")
-
-        if is_syncing:
-            if not self.anim:
-                self.anim = qta.Spin(self.sync_button)
-            self.sync_button.setIcon(
-                qta.icon('fa5s.sync-alt', color=Color.PRIMARY, animation=self.anim))
-        else:
-            self.sync_button.setIcon(qta.icon(
-                'fa5s.sync-alt', color=Color.TEXT_SECONDARY, color_active=Color.PRIMARY))
-
-        self.sync_button.setEnabled(not is_syncing)
+        light_color = Color.PRIMARY.name() if is_syncing_process else color_map.get(
+            status, Color.TEXT_SECONDARY.name())
 
         self.status_light.setPixmap(
-            qta.icon('fa5s.circle', color=color).pixmap(12, 12))
+            qta.icon('fa5s.circle', color=light_color).pixmap(12, 12))
+        self.sync_button.setEnabled(not is_syncing_process)
 
-        if status in ["success", "error"] and message:
-            parent_window = self.window()
-            if parent_window and parent_window.isVisible():
-                toast = Toast(parent_window)
-                toast.show_toast(message, status=status)
+        # 这个组件不再负责显示 Toast，将其移到主应用层面
+        # if status in ["success", "error"] and message:
+        #     parent_window = self.window()
+        #     if parent_window and parent_window.isVisible():
+        #         toast = Toast(parent_window)
+        #         toast.show_toast(message, status=status)

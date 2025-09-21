@@ -14,11 +14,17 @@ sync_bp = Blueprint(
 
 
 def get_user_from_token():
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer static-token-for-'):
+    try:
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer static-token-for-'):
+            return None
+        email = auth_header.split('Bearer static-token-for-')[1]
+        # --- 核心修复：确保查询不会出错 ---
+        user = User.query.filter_by(email=email).first()
+        return user
+    except Exception:
+        # 即使发生未知错误，也返回 None，而不是让 Flask 崩溃
         return None
-    email = auth_header.split('Bearer static-token-for-')[1]
-    return User.query.filter_by(email=email).first()
 
 # 辅助函数：验证用户是否有权访问此保险库
 

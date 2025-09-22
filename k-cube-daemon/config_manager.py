@@ -9,7 +9,7 @@ import json
 class ConfigManager:
     def __init__(self, config_name="k_cube_daemon_config.json"):
         self.config_path = Path.home() / ".kcube" / config_name
-        self.config_path.parent.mkdir(exist_ok=True)
+        # self.config_path.parent.mkdir(exist_ok=True)
         self.config = self._load()
 
     def _load(self) -> dict:

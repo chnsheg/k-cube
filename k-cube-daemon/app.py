@@ -174,42 +174,73 @@ class KCubeApplication(QApplication):
             self.main_window.statusBar().clearMessage()
             self.main_window.show()
 
-    def create_new_vault(self, path, name):
+    @pyqtSlot(str)  # 槽函数现在只接收一个 path 参数
+    def create_new_vault(self, path_str: str):
+        """处理新建知识库的请求。"""
         try:
             self.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            vault_info = self.client.create_vault(name)
-            repo = Repository.initialize(Path(path))
+
+            target_path = Path(path_str)
+
+            if target_path.exists():
+                raise ValueError("目标文件夹或文件已存在。")
+
+            # --- 核心修复：从路径中推导出名称 ---
+            vault_name = target_path.name
+
+            # 程序负责创建文件夹
+            target_path.mkdir(parents=True)
+
+            vault_info = self.client.create_vault(vault_name)
+            repo = Repository.initialize(target_path)
             repo.config.set("vault_id", vault_info['id'])
             repo.config.set("remote_url", config.get("remote_url"))
+
             vault_paths = config.get("vault_paths", [])
-            vault_paths.append(path)
+            vault_paths.append(path_str)
             config.set("vault_paths", vault_paths)
+
             self.restart_all_workers()
+            self.show_toast(f"知识库 '{vault_name}' 创建成功！", "success")
+
         except Exception as e:
             CustomMessageBox.show_critical(self.main_window, "创建失败", str(e))
+            # 如果创建失败，清理可能已创建的空文件夹
+            if 'target_path' in locals() and target_path.exists() and not any(target_path.iterdir()):
+                target_path.rmdir()
         finally:
             self.restoreOverrideCursor()
 
-    def clone_vault(self, vault_id, name, local_path):
+    @pyqtSlot(str, str, str)
+    def clone_vault(self, vault_id: str, name: str, local_parent_path: str):
+        """处理克隆知识库的请求。"""
         try:
             self.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            target_path = Path(local_path) / name
+
+            # --- 核心修复：在这里构建最终路径并创建 ---
+            target_path = Path(local_parent_path) / name
             if target_path.exists() and any(target_path.iterdir()):
-                raise ValueError("目标文件夹已存在且不为空！")
-            target_path.mkdir(exist_ok=True, parents=True)
+                raise ValueError(f"目标文件夹 '{target_path}' 已存在且不为空！")
+
+            # Repository.initialize 会负责创建 .kcube 和其父目录
             repo = Repository.initialize(target_path)
+
             repo.config.set("vault_id", vault_id)
             repo.config.set("remote_url", config.get("remote_url"))
             repo.vault_id = vault_id
+
             synchronizer = Synchronizer(repo, self.client)
             synchronizer.sync()
+
             latest_hash = repo.db.get_latest_version_hash()
             if latest_hash:
                 repo.restore(latest_hash)
+
             vault_paths = config.get("vault_paths", [])
             vault_paths.append(str(target_path))
             config.set("vault_paths", vault_paths)
             self.restart_all_workers()
+
         except Exception as e:
             CustomMessageBox.show_critical(self.main_window, "克隆失败", str(e))
         finally:

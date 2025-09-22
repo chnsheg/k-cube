@@ -88,18 +88,6 @@ class Repository:
 
     @classmethod
     def initialize(cls, path: Path) -> 'Repository':
-        """
-        在指定路径初始化一个新的保险库。
-
-        Args:
-            path (Path): 要初始化的目录路径。
-
-        Returns:
-            Repository: 新创建的保险库实例。
-
-        Raises:
-            FileExistsError: 如果该位置已经是或包含一个保险库。
-        """
         if find_vault_root(path):
             raise FileExistsError(f"无法在 '{path}' 初始化：已存在保险库。")
 
@@ -107,13 +95,12 @@ class Repository:
         versions_path = kcube_path / "versions"
 
         try:
-            kcube_path.mkdir()
-            versions_path.mkdir()
+            # --- 核心修复：使用 parents=True 来创建所有必需的父目录 ---
+            kcube_path.mkdir(parents=True, exist_ok=True)
+            versions_path.mkdir(exist_ok=True)
         except OSError as e:
-            # 实际应用中应处理权限等问题
             raise OSError(f"创建目录失败: {e}")
 
-        # 初始化数据库
         db = Database(kcube_path / "index.db")
         db.initialize_schema()
 

@@ -257,8 +257,12 @@ class MainWindow(QMainWindow):
         self.link_request.emit(path, vault_id)
 
     def on_vault_card_selected(self, vault_id, name):
-        path = QFileDialog.getExistingDirectory(self, f"为 '{name}' 选择一个本地文件夹")
+        """处理克隆请求，现在只让用户选择父目录。"""
+        # --- 核心修复：使用 getExistingDirectory ---
+        path = QFileDialog.getExistingDirectory(
+            self, f"为知识库 '{name}' 选择一个存放位置 (父文件夹)")
         if path:
+            # 发射信号，让 app.py 负责后续的子目录创建
             self.clone_request.emit(vault_id, name, path)
 
     def _create_empty_state_page(self):

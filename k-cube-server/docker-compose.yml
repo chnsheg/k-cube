@@ -1,0 +1,72 @@
+# k-cube-server/docker-compose.yml
+
+# 使用 Docker Compose 文件格式的版本 3.8
+version: '3.8'
+
+# 定义我们的服务 (容器)
+services:
+  # --- 1. 数据库服务 ---
+  db:
+    # 使用官方的 PostgreSQL 14 镜像，alpine 版本体积更小
+    image: postgres:14-alpine
+    # 为容器指定一个易于识别的名称
+    container_name: k_cube_db
+    # 数据持久化：
+    # 将容器内部的 /var/lib/postgresql/data/ 目录 (PostgreSQL 存储数据的地方)
+    # 映射到 Docker 的一个名为 'postgres_data' 的持久化卷 (volume) 上。
+    # 这可以确保即使容器被删除，你的数据库数据也不会丢失。
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    # 环境变量：
+    # 从项目根目录下的 .env 文件加载数据库的用户名、密码和数据库名。
+    # 这样做更安全，避免了将敏感信息硬编码在 yml 文件中。
+    env_file:
+      - .env
+    # 重启策略：
+    # 无论容器因何种原因停止，Docker 都会自动尝试重启它。
+    restart: always
+
+  # --- 2. 应用服务 ---
+  app:
+    # 为容器指定一个易于识别的名称
+    container_name: k_cube_app
+    # 构建指令：
+    # 告诉 Docker Compose 在当前目录下寻找 Dockerfile 并用它来构建镜像。
+    build: .
+    # 卷映射：
+    # 将宿主机的当前目录 ( . ) 映射到容器内部的 /app 目录。
+    # 这是一个关键的开发特性，它允许你在本地修改代码，
+    # Gunicorn 会自动检测到变化并重载，无需重新构建整个镜像。
+    volumes:
+      - .:/app
+    # 端口映射：
+    # 将容器的 5000 端口，绑定到宿主机的 5000 端口上。
+    # 127.0.0.1 表示只允许从宿主机本机访问，这是安全的做法，
+    # 因为公网流量应该由 Nginx 代理。
+    # 如果你想直接从公网访问，可以改为 "5000:5000"。
+    ports:
+      - "5000:5000"
+    # 环境变量：
+    # 同样从 .env 文件加载配置。
+    # 此外，我们还在这里明确定义了 DATABASE_URL，
+    # 组合了 .env 文件中的变量，确保 Gunicorn 能获取到。
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - FLASK_APP=wsgi.py
+      - FLASK_DEBUG=0 # 生产环境设置为0，关闭调试模式
+    # 依赖关系：
+    # 确保在 db 服务完全启动并准备就绪后，才开始启动 app 服务。
+    depends_on:
+      - db
+    # 重启策略
+    restart: always
+    # 容器启动时执行的命令：
+    # 首先赋予 entrypoint.sh 执行权限，然后执行它。
+    command: sh -c "chmod +x /app/entrypoint.sh && /app/entrypoint.sh"
+
+# --- 定义持久化卷 ---
+volumes:
+  # 定义一个名为 postgres_data 的 Docker 卷
+  postgres_data:

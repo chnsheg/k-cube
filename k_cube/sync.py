@@ -1,4 +1,5 @@
 import base64
+import sys
 from rich.console import Console
 from rich.progress import Progress
 from dataclasses import dataclass
@@ -6,7 +7,12 @@ from dataclasses import dataclass
 from .repository import Repository
 from .client import APIClient, APIError
 
-console = Console()
+# --- 核心修复：强制 rich 使用 UTF-8 编码 ---
+# 在 Windows GUI 应用的子进程中，stdout 可能没有正确的编码
+try:
+    console = Console(file=sys.stdout, force_terminal=True, encoding="utf-8")
+except TypeError:  # 兼容旧版 rich
+    console = Console(file=sys.stdout, force_terminal=True)
 
 
 @dataclass

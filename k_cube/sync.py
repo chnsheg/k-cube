@@ -1,18 +1,12 @@
 import base64
-import sys
 from rich.console import Console
 from rich.progress import Progress
 from dataclasses import dataclass
-
+import logging
 from .repository import Repository
 from .client import APIClient, APIError
 
-# --- 核心修复：强制 rich 使用 UTF-8 编码 ---
-# 在 Windows GUI 应用的子进程中，stdout 可能没有正确的编码
-try:
-    console = Console(file=sys.stdout, force_terminal=True, encoding="utf-8")
-except TypeError:  # 兼容旧版 rich
-    console = Console(file=sys.stdout, force_terminal=True)
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,7 +44,7 @@ class Synchronizer:
         """
         执行一个完整的双向同步周期，并返回详细结果。
         """
-        console.print("🔄 开始同步...")
+        log.info("🔄 开始同步...")
 
         local_versions = self.repo.db.get_all_version_hashes()
         sync_state = self.client.check_sync_state(
@@ -65,24 +59,24 @@ class Synchronizer:
         )
 
         if versions_to_upload:
-            console.print(
+            log.info(
                 f"  - [yellow]正在上传 {result.versions_uploaded} 个版本...[/yellow]")
             self._push_changes(versions_to_upload)
         if versions_to_download:
-            console.print(
+            log.info(
                 f"  - [green]正在下载 {result.versions_downloaded} 个版本...[/green]")
             self._pull_changes(versions_to_download)
 
         if not result.has_changes:
-            console.print("[bold green]✅ 你的知识库已经是最新的了！[/bold green]")
+            log.info("[bold green]✅ 你的知识库已经是最新的了！[/bold green]")
         else:
-            console.print("[bold green]✅ 同步完成！[/bold green]")
+            log.info("[bold green]✅ 同步完成！[/bold green]")
 
         return result
 
     def _push_changes(self, version_hashes: list):
         """处理上传逻辑。"""
-        console.print("\n[bold yellow]⬆️ 正在上传本地变更...[/bold yellow]")
+        log.info("\n[bold yellow]⬆️ 正在上传本地变更...[/bold yellow]")
 
         # a. 收集所有待上传版本的数据和涉及的 blob
         versions_data_to_upload = []
@@ -112,7 +106,7 @@ class Synchronizer:
                 blobs_payload.append(
                     {"hash": b_hash, "content_b64": encoded_content})
             except IOError as e:
-                console.print(f"[red]错误：无法读取 blob {b_hash[:8]}: {e}[/red]")
+                log.info(f"[red]错误：无法读取 blob {b_hash[:8]}: {e}[/red]")
 
         if blobs_payload:
             with Progress() as progress:
@@ -131,7 +125,7 @@ class Synchronizer:
 
     def _pull_changes(self, version_hashes: list):
         """处理下载逻辑。"""
-        console.print("\n[bold green]⬇️ 正在下载远程变更...[/bold green]")
+        log.info("\n[bold green]⬇️ 正在下载远程变更...[/bold green]")
 
         # a. 下载版本元数据
         with Progress() as progress:
